@@ -5,7 +5,6 @@ It assumes p4 or p4.exe is in the PATH.
 It uses the p4 -G global option which returns Python marshalled dictionary objects.
 
 p4 Python parsing module is based on: https://github.com/hambster/gopymarshal
-
 */
 package p4
 
@@ -42,11 +41,26 @@ const (
 	dictInitSize = 64
 )
 
+var (
+	escapeCharMap = map[string]string{
+		"@": "%40",
+		"#": "%23",
+		"*": "%2A",
+	}
+)
+
 // Parse error
 var (
 	ErrParse       = errors.New("invalid data")
 	ErrUnknownCode = errors.New("unknown code")
 )
+
+func PathEscape(path string) string {
+	for k, v := range escapeCharMap {
+		path = strings.Replace(path, k, v, -1)
+	}
+	return path
+}
 
 // Unmarshal data serialized by python
 func Unmarshal(buffer *bytes.Buffer) (ret interface{}, retErr error) {
@@ -203,6 +217,7 @@ func readDict(buffer *bytes.Buffer) (ret map[interface{}]interface{}, retErr err
 type P4 struct {
 	port   string
 	user   string
+	passwd string
 	client string
 }
 
@@ -213,10 +228,11 @@ func NewP4() *P4 {
 }
 
 // NewP4Params - create and initialise with params
-func NewP4Params(port string, user string, client string) *P4 {
+func NewP4Params(port, user, passwd, client string) *P4 {
 	var p4 P4
 	p4.port = port
 	p4.user = user
+	p4.passwd = passwd
 	p4.client = client
 	return &p4
 }
@@ -242,9 +258,13 @@ func (p4 *P4) getOptions() []string {
 	if p4.user != "" {
 		opts = append(opts, "-u", p4.user)
 	}
+	if p4.passwd != "" {
+		opts = append(opts, "-P", p4.passwd)
+	}
 	if p4.client != "" {
 		opts = append(opts, "-c", p4.client)
 	}
+	opts = append(opts, "-Q", "cp936")
 	return opts
 }
 
@@ -258,25 +278,32 @@ func (p4 *P4) getJOptions() []string {
 	if p4.user != "" {
 		opts = append(opts, "-u", p4.user)
 	}
+	if p4.passwd != "" {
+		opts = append(opts, "-P", p4.passwd)
+	}
 	if p4.client != "" {
 		opts = append(opts, "-c", p4.client)
 	}
+	opts = append(opts, "-Q", "cp936")
 	return opts
 }
 
 // Get options that go before the p4 command
 func (p4 *P4) getOptionsNonMarshal() []string {
-	opts := []string{}
-
+	var opts []string
 	if p4.port != "" {
 		opts = append(opts, "-p", p4.port)
 	}
 	if p4.user != "" {
 		opts = append(opts, "-u", p4.user)
 	}
+	if p4.passwd != "" {
+		opts = append(opts, "-P", p4.passwd)
+	}
 	if p4.client != "" {
 		opts = append(opts, "-c", p4.client)
 	}
+	opts = append(opts, "-Q", "cp936")
 	return opts
 }
 
@@ -300,26 +327,47 @@ func (p4 *P4) Run(args []string) ([]map[string]string, error) {
 		return nil, errors.New(stderr.String())
 	}
 	results := make([]map[string]string, 0)
+	decoder := json.NewDecoder(&stdout)
 	for {
-		r := make(map[string]string)
-		err := json.NewDecoder(&stdout).Decode(&r)
+		var r map[string]string
+		err := decoder.Decode(&r)
 		if err == io.EOF {
 			break
 		}
-		if err == nil {
-			if r == nil {
-				// End of object
-				break
-			}
-			results = append(results, r)
-		} else {
-			if mainerr == nil {
-				mainerr = err
-			}
-			break
+		if err != nil {
+			log.Println("error:", err)
 		}
+		results = append(results, r)
 	}
 	return results, mainerr
+}
+
+func (p4 *P4) RunNonMarshal(args []string) (string, error) {
+	opts := p4.getOptionsNonMarshal()
+	args = append(opts, args...)
+	cmd := exec.Command("p4", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		return "", err
+	}
+	return stdout.String(), nil
+}
+
+func (p4 *P4) RunNonMarshalBytes(args []string) ([]byte, error) {
+	opts := p4.getOptionsNonMarshal()
+	args = append(opts, args...)
+	cmd := exec.Command("p4", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		return nil, err
+	}
+	return stdout.Bytes(), nil
 }
 
 // parseError turns perforce error messages into go error's
